@@ -20,6 +20,7 @@ def get_model():
             filename="scancer_model_final6.keras"
         )
         print("Loading model...", flush=True)
+        tf.keras.mixed_precision.set_global_policy('float16')
         model = load_model(MODEL_PATH)
         print("Model ready!", flush=True)
     return model
