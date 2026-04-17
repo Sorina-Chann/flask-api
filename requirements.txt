@@ -1,7 +1,7 @@
 flask
 gunicorn
 numpy
-opencv-python
-tensorflow
+opencv-python-headless
 huggingface_hub
+tensorflow==2.15.0
 tf-explain
