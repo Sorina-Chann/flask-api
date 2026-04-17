@@ -1,2 +1,7 @@
 flask
 gunicorn
+numpy
+opencv-python
+tensorflow
+huggingface_hub
+tf-explain
