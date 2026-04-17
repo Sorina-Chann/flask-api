@@ -6,7 +6,6 @@ import os
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
-from tf_explain.core.grad_cam import GradCAM
 
 app = Flask(__name__)
 
@@ -24,6 +23,30 @@ def get_model():
         model = load_model(MODEL_PATH)
         print("Model ready!", flush=True)
     return model
+
+
+def grad_cam(m, img_array, layer_name):
+    grad_model = tf.keras.models.Model(
+        inputs=m.input,
+        outputs=[m.get_layer(layer_name).output, m.output]
+    )
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(img_array)
+        loss = predictions[:, 0]
+
+    grads = tape.gradient(loss, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_outputs = conv_outputs[0].numpy()
+    pooled_grads = pooled_grads.numpy()
+
+    for i in range(pooled_grads.shape[-1]):
+        conv_outputs[:, :, i] *= pooled_grads[i]
+
+    heatmap = np.mean(conv_outputs, axis=-1)
+    heatmap = np.maximum(heatmap, 0)
+    if heatmap.max() != 0:
+        heatmap /= heatmap.max()
+    return heatmap
 
 
 HTML_PAGE = """
@@ -52,16 +75,8 @@ HTML_PAGE = """
       max-width: 700px;
       box-shadow: 0 2px 12px rgba(0,0,0,0.08);
     }
-    h1 {
-      font-size: 1.4rem;
-      margin-bottom: 0.4rem;
-      color: #1a1a1a;
-    }
-    p.subtitle {
-      font-size: 0.9rem;
-      color: #666;
-      margin-bottom: 1.5rem;
-    }
+    h1 { font-size: 1.4rem; margin-bottom: 0.4rem; color: #1a1a1a; }
+    p.subtitle { font-size: 0.9rem; color: #666; margin-bottom: 1.5rem; }
     .drop-zone {
       border: 2px dashed #ccc;
       border-radius: 10px;
@@ -71,10 +86,7 @@ HTML_PAGE = """
       transition: background 0.2s, border-color 0.2s;
       background: #fafafa;
     }
-    .drop-zone:hover, .drop-zone.drag-over {
-      background: #f0f7ff;
-      border-color: #378ADD;
-    }
+    .drop-zone:hover, .drop-zone.drag-over { background: #f0f7ff; border-color: #378ADD; }
     .drop-zone .icon { font-size: 2rem; margin-bottom: 0.5rem; }
     .drop-zone p { font-size: 0.95rem; color: #555; }
     input[type="file"] { display: none; }
@@ -92,47 +104,23 @@ HTML_PAGE = """
     button:hover { background: #378ADD; color: white; }
     button:disabled { opacity: 0.5; cursor: default; }
     #status {
-      font-size: 0.85rem;
-      color: #555;
-      margin-top: 0.8rem;
-      min-height: 20px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      font-size: 0.85rem; color: #555; margin-top: 0.8rem;
+      min-height: 20px; display: flex; align-items: center; gap: 8px;
     }
     .spinner {
       width: 16px; height: 16px;
-      border: 2px solid #ddd;
-      border-top-color: #378ADD;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      flex-shrink: 0;
+      border: 2px solid #ddd; border-top-color: #378ADD;
+      border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     #error-msg { color: #c0392b; font-size: 0.85rem; margin-top: 0.5rem; }
-    .results {
-      display: none;
-      margin-top: 1.5rem;
-      gap: 1rem;
-      grid-template-columns: 1fr 1fr;
-    }
+    .results { display: none; margin-top: 1.5rem; gap: 1rem; grid-template-columns: 1fr 1fr; }
     .results.show { display: grid; }
     .img-card { text-align: center; }
-    .img-card .label {
-      font-size: 0.8rem;
-      color: #888;
-      margin-bottom: 6px;
-    }
-    .img-card img {
-      width: 100%;
-      border-radius: 8px;
-      border: 1px solid #eee;
-      display: block;
-    }
+    .img-card .label { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .img-card img { width: 100%; border-radius: 8px; border: 1px solid #eee; display: block; }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; }
-    @media (max-width: 500px) {
-      .results.show { grid-template-columns: 1fr; }
-    }
+    @media (max-width: 500px) { .results.show { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -184,15 +172,11 @@ HTML_PAGE = """
   const fileInput = document.getElementById("file-input");
   const dropZone = document.getElementById("drop-zone");
 
-  fileInput.addEventListener("change", e => {
-    if (e.target.files[0]) loadFile(e.target.files[0]);
-  });
-
+  fileInput.addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
   dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
   dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
   dropZone.addEventListener("drop", e => {
-    e.preventDefault();
-    dropZone.classList.remove("drag-over");
+    e.preventDefault(); dropZone.classList.remove("drag-over");
     if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
   });
 
@@ -214,17 +198,17 @@ HTML_PAGE = """
     const btn = document.getElementById("analyze-btn");
     const status = document.getElementById("status");
     const errEl = document.getElementById("error-msg");
-
     btn.disabled = true;
     errEl.textContent = "";
     status.innerHTML = '<div class="spinner"></div><span>جاري التحليل — قد يستغرق ~60 ثانية في أول طلب...</span>';
-
     const formData = new FormData();
     formData.append("image", selectedFile);
-
     try {
       const res = await fetch(API_URL, { method: "POST", body: formData });
-      if (!res.ok) throw new Error("فشل الخادم برمز: " + res.status);
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || "رمز: " + res.status);
+      }
       resultBlob = await res.blob();
       const url = URL.createObjectURL(resultBlob);
       document.getElementById("orig-img").src = document.getElementById("preview-img").src;
@@ -240,9 +224,7 @@ HTML_PAGE = """
   }
 
   function reset() {
-    selectedFile = null;
-    resultBlob = null;
-    fileInput.value = "";
+    selectedFile = null; resultBlob = null; fileInput.value = "";
     document.getElementById("preview-area").style.display = "none";
     document.getElementById("results").classList.remove("show");
     document.getElementById("error-msg").textContent = "";
@@ -269,43 +251,45 @@ def home():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    m = get_model()
+    try:
+        m = get_model()
 
-    file = request.files["image"]
-    img = np.frombuffer(file.read(), np.uint8)
-    img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-    img_resized = cv2.resize(img, (128, 128))
-    input_img = np.expand_dims(img_resized, axis=0) / 255.0
+        file = request.files["image"]
+        img = np.frombuffer(file.read(), np.uint8)
+        img = cv2.imdecode(img, cv2.IMREAD_COLOR)
+        img_resized = cv2.resize(img, (128, 128))
+        input_img = np.expand_dims(img_resized, axis=0) / 255.0
 
-    preds = m.predict(input_img)
-    print(f"Prediction: {preds}", flush=True)
+        preds = m.predict(input_img)
+        print(f"Prediction: {preds}", flush=True)
 
-    explainer = GradCAM()
+        last_conv_layer_name = None
+        for layer in reversed(m.layers):
+            if "conv" in layer.name:
+                last_conv_layer_name = layer.name
+                break
 
-    last_conv_layer_name = None
-    for layer in reversed(m.layers):
-        if "conv" in layer.name:
-            last_conv_layer_name = layer.name
-            break
+        if last_conv_layer_name is None:
+            return "No conv layer found in model", 500
 
-    if last_conv_layer_name is None:
-        return "No conv layer found in model", 500
+        print(f"Using layer: {last_conv_layer_name}", flush=True)
 
-    print(f"Using layer: {last_conv_layer_name}", flush=True)
+        heatmap = grad_cam(m, input_img, last_conv_layer_name)
 
-    grid = explainer.explain(
-        (input_img, None),
-        m,
-        class_index=0,
-        layer_name=last_conv_layer_name
-    )
+        heatmap_resized = cv2.resize(heatmap, (128, 128))
+        heatmap_uint8 = np.uint8(255 * heatmap_resized)
+        heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
 
-    heatmap = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)
-    overlay = cv2.addWeighted(img_resized, 0.6, heatmap, 0.4, 0)
+        overlay = cv2.addWeighted(img_resized, 0.6, heatmap_color, 0.4, 0)
 
-    _, buffer = cv2.imencode(".png", overlay)
-    io_buf = io.BytesIO(buffer)
-    return send_file(io_buf, mimetype="image/png")
+        _, buffer = cv2.imencode(".png", overlay)
+        io_buf = io.BytesIO(buffer)
+        return send_file(io_buf, mimetype="image/png")
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc(), flush=True)
+        return str(e), 500
 
 
 if __name__ == "__main__":
